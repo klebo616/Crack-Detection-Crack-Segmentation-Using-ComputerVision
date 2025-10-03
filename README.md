@@ -47,6 +47,15 @@ I also tested Sobel filters to extract edges based on image gradients (horizonta
 Useful for initial edge detection but insufficient on its own for accurate segmentation.
 
 ---
+## 4. Model training using Dynamic Sneak Convolution (DSC)
+
+Dynamic Snake Convolution (DSC) is a technique designed to improve how convolutional neural networks (CNNs) detect and follow object boundaries — like cracks in concrete.
+
+Unlike standard convolution, which uses fixed grid patterns (e.g., 3×3 kernels), DSC allows the sampling points of the convolution to move dynamically. This flexibility helps the network "adapt" to curved or irregular shapes in the image, similar to how a snake moves along a path.
+
+DSC is especially useful in tasks like crack detection, edge segmentation, and irregular object boundaries, where traditional kernels might miss or blur thin or curved details.
+
+https://media.springernature.com/full/springer-static/image/art%3A10.1038%2Fs41598-024-81119-1/MediaObjects/41598_2024_81119_Fig2_HTML.png?as=webp
 
 ### Summary
 
@@ -60,6 +69,6 @@ Useful for initial edge detection but insufficient on its own for accurate segme
 
 ### Next Steps
 
-- Explore hybrid approaches that combine OTSU with other edge-based techniques.
+- Explore other deeplearning models (SAM,...)
 - Improve preprocessing to normalize lighting conditions.
 - Test newer segmentation models for better generalization.
