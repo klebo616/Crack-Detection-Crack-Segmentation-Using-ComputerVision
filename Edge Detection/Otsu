@@ -1,0 +1,144 @@
+import cv2
+import numpy as np
+import os
+from shutil import move
+
+# ----------------------------- Paths -----------------------------
+INPUT_DIR       = r"C:\Users\bob1k\Desktop\MASTER\Thesis\CNN\.venv\contrast_stretched"
+GEN_MASKS_DIR   = r"C:\Users\bob1k\Desktop\MASTER\Thesis\CNN\.venv\generated_masks"   # new masks saved here
+OLD_MASKS_DIR   = r"C:\Users\bob1k\Desktop\MASTER\Thesis\CNN\.venv\old_masks"         # previous run's masks (after rotation)
+COMPARE_OUT_DIR = r"C:\Users\bob1k\Desktop\MASTER\Thesis\CNN\.venv\comparissons"
+
+IMG_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
+# -----------------------------------------------------------------
+
+# ---------- Helpers (labels & overlays & rotation) ----------
+def overlay_mask_on_image(image_bgr, mask, alpha=0.4, color_bgr=(0, 0, 255)):
+    """Overlay binary mask (255=white) on BGR image in a faded color."""
+    if mask is None:
+        return image_bgr.copy()
+    h, w = image_bgr.shape[:2]
+    if mask.shape[:2] != (h, w):
+        mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
+    mask01 = (mask > 0).astype(np.uint8)
+    color_layer = np.zeros_like(image_bgr, dtype=np.uint8)
+    color_layer[mask01 == 1] = color_bgr
+    return cv2.addWeighted(image_bgr, 1.0, color_layer, alpha, 0.0)
+
+def add_label(image_bgr, text):
+    """Add a top-centered white label with black shadow."""
+    labeled = image_bgr.copy()
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = 1.0
+    thickness = 2
+    color = (255, 255, 255)
+    shadow = (0, 0, 0)
+    (tw, th), _ = cv2.getTextSize(text, font, scale, thickness)
+    x = (labeled.shape[1] - tw) // 2
+    y = th + 10
+    cv2.putText(labeled, text, (x+2, y+2), font, scale, shadow, thickness+2, cv2.LINE_AA)
+    cv2.putText(labeled, text, (x, y),     font, scale, color,  thickness,   cv2.LINE_AA)
+    return labeled
+
+def rotate_previous_masks(gen_dir, old_dir):
+    """Move previous run's generated masks to old_masks (overwrite if needed)."""
+    os.makedirs(gen_dir, exist_ok=True)
+    os.makedirs(old_dir, exist_ok=True)
+    moved = 0
+    for fname in os.listdir(gen_dir):
+        if fname.lower().endswith(IMG_EXTS):
+            src = os.path.join(gen_dir, fname)
+            dst = os.path.join(old_dir, fname)
+            try:
+                if os.path.exists(dst):
+                    os.remove(dst)
+                move(src, dst)
+                moved += 1
+            except Exception:
+                pass
+    print(f"↻ Rotated {moved} masks: generated_masks → old_masks")
+# -------------------------------------------------------------
+
+# ============================ MAIN ============================
+if __name__ == "__main__":
+    os.makedirs(GEN_MASKS_DIR, exist_ok=True)
+    os.makedirs(OLD_MASKS_DIR, exist_ok=True)
+    os.makedirs(COMPARE_OUT_DIR, exist_ok=True)
+
+    # 0) Rotate previous run's masks first
+    rotate_previous_masks(GEN_MASKS_DIR, OLD_MASKS_DIR)
+
+    # 1) Process each image with YOUR EXACT STEPS
+    for filename in os.listdir(INPUT_DIR):
+        if not filename.lower().endswith(IMG_EXTS):
+            continue
+
+        img_path = os.path.join(INPUT_DIR, filename)
+        gray = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+        if gray is None:
+            continue
+
+        # ======================================================
+        # STEP 1: Noise reduction while preserving edges
+        # (your parameters kept exactly)
+        gray_blur = cv2.bilateralFilter(gray, d=7, sigmaColor=25, sigmaSpace=25)
+
+        # STEP 2: Enhance thin dark lines (Blackhat transform)
+        kernel_bh = cv2.getStructuringElement(cv2.MORPH_RECT, (17, 17))
+        blackhat = cv2.morphologyEx(gray_blur, cv2.MORPH_BLACKHAT, kernel_bh)
+
+        # STEP 3: Normalize + Threshold (Otsu)
+        blackhat_norm = cv2.normalize(blackhat, None, 0, 255, cv2.NORM_MINMAX)
+        _, mask = cv2.threshold(blackhat_norm, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        # STEP 4: Remove small noise speckles via connected components
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        areas = stats[:, cv2.CC_STAT_AREA]
+        size_thresh = 120  # <-- same as your code
+        refined = np.zeros_like(mask)
+        for lbl in range(1, num_labels):
+            if areas[lbl] >= size_thresh:
+                refined[labels == lbl] = 255
+
+        # STEP 5: Strengthen continuity of crack
+        kernel_line = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3))
+        closed = cv2.morphologyEx(refined, cv2.MORPH_CLOSE, kernel_line, iterations=2)
+
+        # Optional: Connect small gaps without thickening too much
+        kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        connected = cv2.dilate(closed, kernel_small, iterations=1)
+        connected = cv2.erode(connected, kernel_small, iterations=1)
+
+        # STEP 6: Clean again to remove any remaining speckles
+        num_labels2, labels2, stats2, _ = cv2.connectedComponentsWithStats(connected, connectivity=8)
+        final_mask = np.zeros_like(connected)
+        for lbl in range(1, num_labels2):
+            if stats2[lbl, cv2.CC_STAT_AREA] >= size_thresh:
+                final_mask[labels2 == lbl] = 255
+        # ======================================================
+
+        # 2) Save NEW mask to generated_masks
+        out_mask_path = os.path.join(GEN_MASKS_DIR, filename)  # keep same filename
+        cv2.imwrite(out_mask_path, final_mask)
+
+        # 3) Build comparison: Original | Old Overlay | New Overlay
+        #    (use the *rotated* old mask if it exists)
+        old_mask_path = os.path.join(OLD_MASKS_DIR, filename)
+        old_mask = cv2.imread(old_mask_path, cv2.IMREAD_GRAYSCALE) if os.path.exists(old_mask_path) else None
+        # Load BGR original for overlays
+        image_bgr = cv2.imread(img_path)
+
+        overlay_old = overlay_mask_on_image(image_bgr, old_mask, alpha=0.4, color_bgr=(0, 0, 255)) if old_mask is not None else image_bgr.copy()
+        overlay_new = overlay_mask_on_image(image_bgr, final_mask, alpha=0.4, color_bgr=(0, 0, 255))
+
+        panel_orig = add_label(image_bgr, "Original")
+        panel_old  = add_label(overlay_old, "Old Overlay")
+        panel_new  = add_label(overlay_new, "New Overlay")
+
+        comparison = np.concatenate([panel_orig, panel_old, panel_new], axis=1)
+        comp_path = os.path.join(COMPARE_OUT_DIR, os.path.splitext(filename)[0] + "_compare.png")
+        cv2.imwrite(comp_path, comparison)
+
+    print("✅ New masks saved to:", GEN_MASKS_DIR)
+    print("✅ Comparisons saved to:", COMPARE_OUT_DIR)
+    print("✅ Old masks are in:", OLD_MASKS_DIR)
